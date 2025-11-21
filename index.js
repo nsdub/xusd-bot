@@ -38,6 +38,7 @@ const transporter = nodemailer.createTransport({
 
 // Track last checked block
 let lastCheckedBlock = null;
+let isChecking = false; // Prevent concurrent executions
 
 /**
  * Send email notification
@@ -76,6 +77,13 @@ function formatTransaction(tx, receipt) {
  * Check for new transactions involving the contract
  */
 async function checkForActivity() {
+  // Prevent concurrent executions
+  if (isChecking) {
+    console.log('Previous check still in progress, skipping...');
+    return;
+  }
+
+  isChecking = true;
   try {
     const currentBlock = await provider.getBlockNumber();
     
@@ -98,38 +106,91 @@ async function checkForActivity() {
 
     console.log(`Checking blocks ${lastCheckedBlock + 1} to ${currentBlock}`);
 
-    // Check each block for transactions involving our contract
-    for (let blockNum = lastCheckedBlock + 1; blockNum <= currentBlock; blockNum++) {
-      const block = await provider.getBlockWithTransactions(blockNum);
+    // Limit the number of blocks to check in one go to prevent overwhelming the RPC
+    const MAX_BLOCKS_PER_CHECK = 100;
+    const blocksToCheck = Math.min(currentBlock - lastCheckedBlock, MAX_BLOCKS_PER_CHECK);
+    const startBlock = lastCheckedBlock + 1;
+    const endBlock = lastCheckedBlock + blocksToCheck;
+
+    // Fetch blocks in parallel with batching
+    const BATCH_SIZE = 10;
+    for (let i = startBlock; i <= endBlock; i += BATCH_SIZE) {
+      const batchEnd = Math.min(i + BATCH_SIZE - 1, endBlock);
+      const blockPromises = [];
       
-      if (!block || !block.transactions) {
-        console.log(`Block ${blockNum} has no transactions`);
-        continue;
+      for (let blockNum = i; blockNum <= batchEnd; blockNum++) {
+        blockPromises.push(
+          provider.getBlockWithTransactions(blockNum).catch(err => {
+            console.error(`Error fetching block ${blockNum}:`, err.message);
+            return null;
+          })
+        );
       }
 
-      for (const tx of block.transactions) {
-        // Check if transaction is to or from our contract
-        const contractAddr = config.contractAddress.toLowerCase();
-        const txTo = tx.to ? tx.to.toLowerCase() : null;
-        const txFrom = tx.from.toLowerCase();
+      const blocks = await Promise.all(blockPromises);
 
-        if (txTo === contractAddr || txFrom === contractAddr) {
-          console.log(`Activity detected in block ${blockNum}: ${tx.hash}`);
-          
-          // Get transaction receipt for more details
-          const receipt = await provider.getTransactionReceipt(tx.hash);
-          
-          const subject = `Contract Activity Detected - Block ${blockNum}`;
-          const body = formatTransaction(tx, receipt);
-          
-          await sendEmailNotification(subject, body);
+      // Process blocks sequentially to maintain order
+      for (let idx = 0; idx < blocks.length; idx++) {
+        const block = blocks[idx];
+        const blockNum = i + idx;
+
+        if (!block || !block.transactions) {
+          console.log(`Block ${blockNum} has no transactions`);
+          continue;
+        }
+
+        // Collect matching transactions
+        const matchingTxs = [];
+        for (const tx of block.transactions) {
+          // Check if transaction is to or from our contract
+          const contractAddr = config.contractAddress.toLowerCase();
+          const txTo = tx.to ? tx.to.toLowerCase() : null;
+          const txFrom = tx.from.toLowerCase();
+
+          if (txTo === contractAddr || txFrom === contractAddr) {
+            matchingTxs.push(tx);
+          }
+        }
+
+        // Fetch receipts for matching transactions in parallel
+        if (matchingTxs.length > 0) {
+          const receiptPromises = matchingTxs.map(tx =>
+            provider.getTransactionReceipt(tx.hash).catch(err => {
+              console.error(`Error fetching receipt for ${tx.hash}:`, err.message);
+              return null;
+            })
+          );
+
+          const receipts = await Promise.all(receiptPromises);
+
+          // Send notifications
+          for (let j = 0; j < matchingTxs.length; j++) {
+            const tx = matchingTxs[j];
+            const receipt = receipts[j];
+
+            if (receipt) {
+              console.log(`Activity detected in block ${blockNum}: ${tx.hash}`);
+              const subject = `Contract Activity Detected - Block ${blockNum}`;
+              const body = formatTransaction(tx, receipt);
+              await sendEmailNotification(subject, body);
+            }
+          }
         }
       }
     }
 
-    lastCheckedBlock = currentBlock;
+    lastCheckedBlock = endBlock;
+    
+    // If we hit the limit, schedule an immediate check for remaining blocks
+    if (endBlock < currentBlock) {
+      console.log(`More blocks to check (${currentBlock - endBlock} remaining), scheduling immediate check...`);
+      // Use a small delay to avoid tight loops
+      setTimeout(() => checkForActivity(), 1000);
+    }
   } catch (error) {
     console.error('Error checking for activity:', error.message);
+  } finally {
+    isChecking = false;
   }
 }
 
@@ -148,10 +209,15 @@ async function startMonitoring() {
   // Initial check
   await checkForActivity();
 
-  // Set up polling interval
-  setInterval(async () => {
-    await checkForActivity();
-  }, config.pollInterval);
+  // Set up polling with recursive setTimeout to prevent overlapping executions
+  const scheduleNextCheck = () => {
+    setTimeout(async () => {
+      await checkForActivity();
+      scheduleNextCheck();
+    }, config.pollInterval);
+  };
+
+  scheduleNextCheck();
 }
 
 // Handle graceful shutdown
