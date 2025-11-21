@@ -1,18 +1,19 @@
 {
   "name": "xusd-bot",
   "version": "1.0.0",
-  "description": "Smart contract monitoring bot for Avalanche C-Chain with email notifications",
+  "description": "Smart contract monitoring bot for Avalanche C-Chain with email and Telegram notifications",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
     "test": "node test.js"
   },
-  "keywords": ["avalanche", "smart-contract", "monitor", "bot", "email", "notifications"],
+  "keywords": ["avalanche", "smart-contract", "monitor", "bot", "email", "telegram", "notifications"],
   "author": "",
   "license": "ISC",
   "dependencies": {
     "dotenv": "^17.2.3",
     "ethers": "^5.8.0",
+    "node-telegram-bot-api": "^0.66.0",
     "nodemailer": "^7.0.10"
   }
 }
