@@ -79,6 +79,22 @@ Update the SMTP settings accordingly:
 
 ## Usage
 
+### Testing the Setup
+
+Before running the bot, you can test your connection to the Avalanche network:
+
+```bash
+npm test
+```
+
+This will verify:
+- Connection to Avalanche C-Chain RPC
+- Contract address validity
+- Recent blockchain activity
+- Network status
+
+### Running the Bot
+
 Start the monitoring bot:
 
 ```bash
